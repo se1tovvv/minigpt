@@ -76,20 +76,20 @@ python server/minigpt_server.py
 | ----------- | --------- | ------------------ |
 | VCC         | 3V3       | Power              |
 | GND         | GND       | Ground             |
-| SCK (BCLK)  | IO14      | Bit clock          |
-| WS (LRCLK)  | IO15      | Left/right clock   |
-| SD          | IO32      | Data               |
+| SCK (BCLK)  | 26     | Bit clock          |
+| WS (LRCLK)  | 25     | Left/right clock   |
+| SD          | 22      | Data               |
 | L/R         | GND       | Force left channel |
 
 | MAX98357A Pin | ESP32 Pin | Notes       |
 | ------------- | --------- | ----------- |
 | VIN           | 3V3       | Power       |
 | GND           | GND       | Ground      |
-| BCLK          | IO26      | Bit clock   |
-| LRCLK/WSEL    | IO25      | Word select |
-| DIN           | IO33      | Data        |
-| SD_MODE       | GND       | Mono        |
-| GAIN          | NC/GND    | Default     |
+| BCLK          | 14      | Bit clock   |
+| LRCLK/WSEL    | 27      | Word select |
+| DIN           | 13      | Data        |
+| SD_MODE       | not used       | Mono        |
+| GAIN          |not used     | Default     |
 | SPK+          | Speaker+  | Output      |
 | SPK−          | Speaker−  | Output      |
 
@@ -98,20 +98,20 @@ python server/minigpt_server.py
 | -------- | --------- | --------- |
 | VCC      | 3V3       | Power     |
 | GND      | GND       | Ground    |
-| SDA      | IO21      | I2C data  |
-| SCL      | IO22      | I2C clock |
+| SDA      | 21      | I2C data  |
+| SCL      | 23      | I2C clock |
 
 
 | Button          | ESP32 Pin | Notes                        |
 | --------------- | --------- | ---------------------------- |
-| Language select | IO18      | One pin → ESP32, other → GND |
-| Scroll text     | IO19      | One pin → ESP32, other → GND |
+| Language  RU select | 16    | One pin → ESP32, other → GND |
+| Scroll+EN text     | 4      | One pin → ESP32, other → GND |
 
 
 | LED            | ESP32 Pin | Notes                                   |
 | -------------- | --------- | --------------------------------------- |
-| Wi-Fi/Thinking | IO5       | Anode → resistor → ESP32, cathode → GND |
-| Mic Active     | IO4       | Same wiring                             |
+| Wi-Fi/Thinking | 2      | Anode → resistor → ESP32, cathode → GND |
+| Mic Active     | 15       | Same wiring                             |
 
 
 | TP4056 Pin | Connects To                   |
@@ -120,8 +120,8 @@ python server/minigpt_server.py
 | B−         | Li-Po −                       |
 | OUT+       | Power switch → ESP32 3V3 rail |
 | OUT−       | GND                           |
-| USB IN     | Micro-USB for charging        |
 
 
-Note : There is a schematic in main folder.It was done in Kicad, where exact model from esp32u can be different. Feel free to use ESP32 pinout to assign the GPIOS as needed.
+
+Note : There is a schematic in main folder.It was done in Kicad, where exact model from esp32u can be different from this table for some GPIOS like LEDs. Feel free to use ESP32 pinout to assign the GPIOS as needed.
 
