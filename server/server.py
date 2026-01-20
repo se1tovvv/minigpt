@@ -109,8 +109,6 @@ def generate_reply(text: str) -> str:
         "If unsure about facts, clearly say you don't know. "
         "Do not invent people, games or places if you are not sure. "
         "Short, clear sentences. Year is 2026. No markdown, no lists. "
-        "If the user switches to Kazakh, continue replying in Kazakh "
-        "until they clearly ask you to switch language again."
     )
 
     try:
