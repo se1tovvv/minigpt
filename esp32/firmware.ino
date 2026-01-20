@@ -31,7 +31,7 @@ WiFiClient client;
 
 // ======== LEDS & BUTTONS =========
 #define LED_PIN         2     // onboard LED
-#define LED_LISTEN_PIN 15     // "speaking" LED
+#define LED_LISTEN_PIN 15     // "speaking/listening" LED
 #define BTN_SCROLL_PIN  4     // scroll button (RIGHT), to GND, INPUT_PULLUP
 #define BTN_LANG_PIN    16    // language button (LEFT), to GND, INPUT_PULLUP
 
@@ -59,16 +59,19 @@ int    g_totalLines   = 0;
 
 const int LINE_HEIGHT        = 8;
 const int TEXT_TOP           = 12;
-const int MAX_CHARS_PER_LINE = 42;
+
 
 // ======== STREAM / AUDIO PLAYBACK FLAGS ========
-bool   g_pauseStream         = false;  // true -> do not send mic
+bool   g_pauseStream         = false;  // true -> do not send mic (used only while TTS speaking)
 bool   g_audioPlaying        = false;  // true -> reading PCM from server
 size_t g_audioBytesRemaining = 0;
 
 // ======== LANGUAGE STATE ========
 bool   lang_ru       = true;   // true = Russian, false = English
 bool   lang_selected = false;  // language chosen on startup
+
+// ======== WAKE/SLEEP DISPLAY STATE ========
+bool   g_isAwake = false;      // server-controlled (display only). mic still streams for wake word detection.
 
 // -------- prototypes --------
 void showOledMessage(const char* header, const String& body = "");
@@ -80,7 +83,7 @@ void i2s_set_pins_mic();
 void i2s_install_speaker();
 void ensure_connection();
 void speaker_test_beep();
-void selectLanguageOnce();   // NEW
+void selectLanguageOnce();
 
 // ================== SETUP ==================
 void setup() {
@@ -153,8 +156,9 @@ void setup() {
   // ====== LANGUAGE SELECTION ON STARTUP ======
   selectLanguageOnce();
 
-  // After language selection – show “start talking” hint
-  showOledMessage("Ready:", "Start your conversation!");
+  // Start in "sleeping" UI until server wakes it
+  g_isAwake = false;
+  showOledMessage("Mode:", "Sleeping. Say: Jarvis / Assistant");
 }
 
 // ================== LOOP ==================
@@ -169,6 +173,8 @@ void loop() {
   }
 
   // ---- MIC -> SERVER ----
+  // Keep streaming even while "sleeping" so server can detect wake word.
+  // Only pause during TTS playback (g_audioPlaying) or server speaking markers (g_pauseStream).
   if (!g_pauseStream && !g_audioPlaying) {
     size_t bytes_read = 0;
     esp_err_t res = i2s_read(
@@ -226,12 +232,26 @@ void loop() {
       Serial.println(line);
 
       if (line == "LANG_RU_OK" || line == "LANG_EN_OK") {
-        // ack of language; nothing special
+        continue;
+      }
+
+      // Server wake/sleep markers (NEW)
+      if (line == "__awake__") {
+        g_isAwake = true;
+        digitalWrite(LED_LISTEN_PIN, LOW);
+        showOledMessage("Mode:", "Awake. Speak now.");
+        continue;
+      }
+      if (line == "__sleeping__") {
+        g_isAwake = false;
+        digitalWrite(LED_LISTEN_PIN, LOW);
+        showOledMessage("Mode:", "Sleeping. Say: Jarvis / Assistant");
         continue;
       }
 
       if (line == "__listening_on__") {
-        digitalWrite(LED_LISTEN_PIN, HIGH);
+        // Only show listen LED if awake
+        if (g_isAwake) digitalWrite(LED_LISTEN_PIN, HIGH);
         continue;
       }
       if (line == "__listening_off__") {
@@ -300,7 +320,7 @@ void loop() {
 
 // ================== LANGUAGE SELECTION SCREEN ==================
 void selectLanguageOnce() {
-  if (lang_selected) return;  // just in case
+  if (lang_selected) return;
 
   if (g_oledOK) {
     u8g2.clearBuffer();
@@ -313,7 +333,6 @@ void selectLanguageOnce() {
 
   Serial.println("Waiting for language selection...");
 
-  // simple blocking wait
   while (!lang_selected) {
     bool left  = (digitalRead(BTN_LANG_PIN)   == LOW);
     bool right = (digitalRead(BTN_SCROLL_PIN) == LOW);
@@ -328,7 +347,6 @@ void selectLanguageOnce() {
     delay(10);
   }
 
-  // send language command to server
   if (client.connected()) {
     if (lang_ru) {
       client.write((const uint8_t*)"__lang_ru__", 11);
@@ -339,7 +357,6 @@ void selectLanguageOnce() {
     }
   }
 
-  // OLED feedback
   if (g_oledOK) {
     u8g2.clearBuffer();
     u8g2.setFont(u8g2_font_5x7_t_cyrillic);
@@ -355,61 +372,74 @@ void selectLanguageOnce() {
 
 // ================== OLED helpers ==================
 int countWrappedLines(const String& text) {
-  String rest = text;
-  int totalLines = 0;
+  if (!g_oledOK) return 0;
 
-  while (rest.length() > 0) {
-    int len  = rest.length();
-    int take = len;
+  int lines = 0;
+  int start = 0;
+  int len = text.length();
 
-    if (len > MAX_CHARS_PER_LINE) {
-      int cut = rest.lastIndexOf(' ', MAX_CHARS_PER_LINE);
-      if (cut <= 0) cut = MAX_CHARS_PER_LINE;
-      take = cut;
+  while (start < len) {
+    int end = start;
+    String line = "";
+
+    while (end < len) {
+      String test = line + text[end];
+      if (u8g2.getUTF8Width(test.c_str()) > 128) {
+        break;
+      }
+      line = test;
+      end++;
     }
 
-    String line = rest.substring(0, take);
-    line.trim();
-    if (line.length() > 0) totalLines++;
+    if (end == start) end++;  // safety
 
-    if (take >= len) break;
-    rest = rest.substring(take);
-    rest.trim();
+    lines++;
+    start = end;
   }
-  return totalLines;
+
+  return lines;
 }
 
-void drawWrappedUTF8_fromOffset(const String& text, int x, int y, int lineHeight, int startLine) {
-  String rest = text;
+
+void drawWrappedUTF8_fromOffset(
+  const String& text,
+  int x,
+  int y,
+  int lineHeight,
+  int startLine
+) {
+  if (!g_oledOK) return;
+
+  int screenWidth = 128;
+  int start = 0;
+  int len = text.length();
   int currentLine = 0;
 
-  while (rest.length() > 0 && y < 64) {
-    int len  = rest.length();
-    int take = len;
+  while (start < len && y < 64) {
+    int end = start;
+    String line = "";
 
-    if (len > MAX_CHARS_PER_LINE) {
-      int cut = rest.lastIndexOf(' ', MAX_CHARS_PER_LINE);
-      if (cut <= 0) cut = MAX_CHARS_PER_LINE;
-      take = cut;
-    }
-
-    String line = rest.substring(0, take);
-    line.trim();
-
-    if (line.length() > 0) {
-      if (currentLine >= startLine) {
-        u8g2.drawUTF8(x, y, line.c_str());
-        y += lineHeight;
-        if (y >= 64) break;
+    while (end < len) {
+      String test = line + text[end];
+      if (u8g2.getUTF8Width(test.c_str()) > screenWidth) {
+        break;
       }
-      currentLine++;
+      line = test;
+      end++;
     }
 
-    if (take >= len) break;
-    rest = rest.substring(take);
-    rest.trim();
+    if (end == start) end++;  // safety
+
+    if (currentLine >= startLine) {
+      u8g2.drawUTF8(x, y, line.c_str());
+      y += lineHeight;
+    }
+
+    currentLine++;
+    start = end;
   }
 }
+
 
 void renderReply() {
   if (!g_oledOK) return;
