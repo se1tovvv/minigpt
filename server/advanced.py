@@ -3,8 +3,6 @@ import json
 import threading
 import subprocess
 import urllib.parse
-
-
 import config
 from vosk import Model, KaldiRecognizer
 from openai import OpenAI
