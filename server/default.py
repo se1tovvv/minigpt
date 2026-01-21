@@ -1,3 +1,5 @@
+#The following model allows user to use the wake word to activate the system and ask questions. To be able to control PC/laptop, see advanced.py
+
 import socket
 import json
 import threading
