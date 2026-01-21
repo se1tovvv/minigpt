@@ -1,3 +1,5 @@
+#This code allows user to control PC/laptop by opening and closing apps, increasing/decreasing system volume and etc. 
+#However, to play music from Youtube music by the input from Jarvis, use final.py
 import socket
 import json
 import threading
