@@ -242,32 +242,20 @@ def mac_media(action: str) -> bool:
     global ACTIVE_PLAYER
 
     if action == "playpause":
-        if ACTIVE_PLAYER == "ytm":
-            try:
-                if chrome_is_ytm_active_tab():
-                    ok = ytm_toggle_play_pause()
-                    if ok:
-                        return True
-            except Exception as e:
-                print("YTM playpause error:", e)
-            # fallback if YTM not reachable
-            return run_osascript('tell application "Music" to playpause')
-
-        # ACTIVE_PLAYER == "music"
+        if ACTIVE_PLAYER in ("ytm", "youtube"):
+            return ytm_toggle_play_pause()
         return run_osascript('tell application "Music" to playpause')
 
-    elif action == "next":
-        if ACTIVE_PLAYER == "ytm":
-            # если хочешь next для YTM — надо JS, пока fallback:
+    if action == "next":
+        if ACTIVE_PLAYER == "music":
             return run_osascript('tell application "Music" to next track')
-        return run_osascript('tell application "Music" to next track')
 
-    elif action == "previous":
-        if ACTIVE_PLAYER == "ytm":
+    if action == "previous":
+        if ACTIVE_PLAYER == "music":
             return run_osascript('tell application "Music" to previous track')
-        return run_osascript('tell application "Music" to previous track')
 
     return False
+
 
 
 def mac_volume(delta: int = 0, mute: bool = False) -> bool:
@@ -438,7 +426,7 @@ def generate_reply(text: str) -> str:
             model="gpt-4o-mini",
             messages=[{"role": "system", "content": system_prompt}, *recent],
             temperature=0.1,
-            max_tokens=120,
+            max_tokens=70,
         )
         reply = completion.choices[0].message.content.strip()
         return reply.replace("\n", " ")
@@ -526,6 +514,74 @@ def get_weather_wttr(location: str, lang: str) -> str:
             if lang == "ru"
             else "I couldn't fetch the weather right now."
         )
+
+
+# ===== LANG SWITCH =======================================================
+LANG_EN_WORDS = {
+    "english",
+    "eng",
+    "inglish",
+    "english mode",
+    "speak english",
+    "switch to english",
+    "change to english",
+    "in english",
+    "change to russian",
+}
+
+LANG_RU_WORDS = {
+    "russian",
+    "rus",
+    "русский",
+    "по русски",
+    "по-русски",
+    "russian mode",
+    "speak russian",
+    "switch to russian",
+    "in russian",
+    "говори по русски",
+    "говори по-русски",
+    "переключись на русский",
+    "переключи на русский",
+    "русский режим",
+}
+
+# Optional: very common RU phrase for EN
+LANG_EN_WORDS_RU = {
+    "английский",
+    "по английски",
+    "по-английски",
+    "переключись на английский",
+    "переключи на английский",
+    "английский режим",
+}
+
+
+def set_language(conn: socket.socket | None, lang: str) -> bool:
+    """
+    lang: 'ru' or 'en'
+    Updates recognizer immediately.
+    Optionally notifies client (OLED) with a short marker line.
+    """
+    global current_lang, rec
+
+    lang = (lang or "").strip().lower()
+    if lang not in ("ru", "en"):
+        return False
+
+    if current_lang == lang:
+        return True
+
+    current_lang = lang
+    rec = KaldiRecognizer(model_ru if lang == "ru" else model_en, SAMPLE_RATE)
+
+    print(f"LANG -> {current_lang.upper()}")
+
+    # Optional: tell ESP32 (OLED) about language change
+    if conn is not None:
+        send_line(conn, "LANG_RU_OK" if lang == "ru" else "LANG_EN_OK")
+
+    return True
 
 
 # ====================================================================================================
@@ -733,6 +789,113 @@ def mac_music_list_playlists(filter_text: str = "") -> str:
     """
     return run_osascript_out(script)
 
+# ====================================================================================================
+# Youtube Video playing logic
+# ====================================================================================================
+def play_from_youtube_video(query: str) -> bool:
+    q = (query or "").strip()
+    if not q:
+        return False
+
+    term = urllib.parse.quote(q)
+    url = f"https://www.youtube.com/results?search_query={term}"
+
+    # ВАЖНО: открываем внутри Chrome
+    if not chrome_open_url(url, new_tab=True):
+        return False
+
+    time.sleep(2.0)
+
+    # Кликаем строго по первому видео-рендереру
+    js_click_first = r"""
+(() => {
+  const first =
+    document.querySelector('ytd-video-renderer a#thumbnail') ||
+    document.querySelector('ytd-video-renderer a#video-title');
+
+  if (!first) return "NO_VIDEO_RENDERER";
+  first.click();
+  return "CLICKED_FIRST";
+})();
+"""
+    res = chrome_execute_js(js_click_first)
+    print("YT CLICK:", res)
+    if "CLICKED_FIRST" not in (res or ""):
+        return False
+
+    time.sleep(2.0)
+
+    # Проверка: вдруг улетели на music.youtube.com (редко, но бывает)
+    u = chrome_active_url()
+    if "music.youtube.com" in u:
+        print("Redirected to YTM, trying fallback video...")
+        # Идём назад и кликаем следующий ytd-video-renderer (2-й)
+        chrome_execute_js("history.back(); 'BACK';")
+        time.sleep(1.5)
+
+        js_click_second = r"""
+(() => {
+  const vids = Array.from(document.querySelectorAll('ytd-video-renderer'));
+  if (vids.length < 2) return "NO_SECOND";
+  const a =
+    vids[1].querySelector('a#thumbnail') ||
+    vids[1].querySelector('a#video-title');
+  if (!a) return "NO_SECOND_LINK";
+  a.click();
+  return "CLICKED_SECOND";
+})();
+"""
+        res2 = chrome_execute_js(js_click_second)
+        print("YT FALLBACK CLICK:", res2)
+        time.sleep(2.0)
+
+    ok = yt_force_play()
+    if ok:
+        global ACTIVE_PLAYER
+        ACTIVE_PLAYER = "youtube"
+    return ok
+
+
+def chrome_open_url(url: str, new_tab: bool = True) -> bool:
+    safe = _as_escape(url)
+    script = f'''
+    tell application "Google Chrome"
+        activate
+        if (count of windows) = 0 then
+            make new window
+        end if
+        if {str(new_tab).lower()} then
+            set t to make new tab at end of tabs of front window
+            set URL of t to "{safe}"
+            set active tab index of front window to (count of tabs of front window)
+        else
+            set URL of active tab of front window to "{safe}"
+        end if
+    end tell
+    '''
+    return run_osascript(script)
+
+def chrome_active_url() -> str:
+    script = r'''
+    tell application "Google Chrome"
+        if (count of windows) = 0 then return ""
+        return URL of active tab of front window
+    end tell
+    '''
+    return (run_osascript_out(script) or "").strip()
+
+def yt_force_play() -> bool:
+    js = r"""
+(() => {
+  const v = document.querySelector('video');
+  if (!v) return "NO_VIDEO";
+  if (v.paused) { v.play(); return "PLAY"; }
+  return "ALREADY_PLAYING";
+})();
+"""
+    res = chrome_execute_js(js)
+    print("YT FORCE PLAY:", res)
+    return "PLAY" in (res or "") or "ALREADY_PLAYING" in (res or "")
 
 # ====================================================================================================
 # Executing Commands
@@ -884,23 +1047,71 @@ def parse_and_execute_command(user_text: str) -> str | None:
             ok = mac_quit_app(app_key)
             return "Quit." if ok else "I could not quit it."
         return "That app is not in my allowed list."
+# ---------- EN: YouTube VIDEO ----------
+    if t.startswith("play on youtube ") and len(t) > len("play on youtube "):
+        q = user_text[len("play on youtube "):].strip()
+        ok = play_from_youtube_video(q)
+        return "Playing on YouTube." if ok else "Failed to open YouTube."
 
-    # ---- RU commands ----
+    if t.startswith("open on youtube ") and len(t) > len("open on youtube "):
+        q = user_text[len("open on youtube "):].strip()
+        ok = play_from_youtube_video(q)
+        return "Opening on YouTube." if ok else "Failed to open YouTube."
+
+    # ---------- EN: YouTube Music ----------
+    # (оставь ОДНУ ветку; не "turn on", лучше "play", потому что Vosk часто коверкать turn on)
+    if t.startswith("play ") and len(t) > len("play "):
+        q = user_text[len("play "):].strip()
+        ok = play_from_youtube_music(q)
+        return "Okay, playing on YouTube Music." if ok else "Failed. Check Accessibility."
+
+    # Если хочешь именно "turn on ..." — добавь как алиас:
+    if t.startswith("turn on ") and len(t) > len("turn on "):
+        q = user_text[len("turn on "):].strip()
+        ok = play_from_youtube_music(q)
+        return "Okay, playing on YouTube Music." if ok else "Failed. Check Accessibility."
+
+    # ---- RU commands -----------------------------------------
 
     if t == "погода" or t.startswith("погода "):
         loc = user_text[len("погода") :].strip()
         return get_weather_wttr(loc, current_lang)
 
-    if t.startswith(
-        "включи",
-    ) and len(
-        t
-    ) > len("включи"):
-        q = user_text.strip()[len("ютуб ") :].strip()
+   
+    # ---------- RU: YouTube VIDEO ----------
+    # делаем более гибко: "на ютубе", "на ютуб", "в ютубе", "на youtube"
+    if (t.startswith("включи на ютуб") or t.startswith("включи в ютуб") or
+        t.startswith("открой на ютуб") or t.startswith("открой в ютуб") or
+        t.startswith("включи на youtube") or t.startswith("открой на youtube")):
+
+        parts = t.split()
+        idx = -1
+        for i, w in enumerate(parts):
+            if w in ("ютуб", "ютубе", "youtube"):
+                idx = i
+        q = " ".join(parts[idx+1:]).strip() if idx != -1 else ""
+
+        # если вдруг Vosk дал исходный текст лучше — берём из user_text по похожему принципу:
+        if not q:
+            ut = normalize_text(user_text)
+            for key in ("на ютубе", "на ютуб", "в ютубе", "в ютуб", "на youtube"):
+                if key in ut:
+                    q = ut.split(key, 1)[1].strip()
+                    break
+
+        ok = play_from_youtube_video(q)
+        return "Включаю на YouTube." if ok else "Не получилось открыть YouTube."
+
+    # ---------- RU: YouTube Music ----------
+    if t.startswith("включи ") and len(t) > len("включи "):
+        q = user_text[len("включи "):].strip()
         ok = play_from_youtube_music(q)
-        return (
-            "Ок, включаю на YouTube." if ok else "Не получилось. Проверь Accessibility."
-        )
+        return "Ок, включаю в YouTube Music." if ok else "Не получилось. Проверь Accessibility."
+
+    if t.startswith("поставь ") and len(t) > len("поставь "):
+        q = user_text[len("поставь "):].strip()
+        ok = play_from_youtube_music(q)
+        return "Ок, ставлю в YouTube Music." if ok else "Не получилось. Проверь Accessibility."
 
     if t.startswith(
         "поставь",
@@ -1039,6 +1250,7 @@ def parse_and_execute_command(user_text: str) -> str | None:
             ok = mac_quit_app(app_key)
             return "Вышел." if ok else "Не получилось."
         return "Этого приложения нет в списке разрешённых."
+    
 
     return None
 
@@ -1113,6 +1325,29 @@ def handle_client(conn: socket.socket, addr):
                 elif stripped == "":
                     ack = "Да?" if current_lang == "ru" else "Yes?"
                     speak(conn, ack)
+                    continue
+
+                # ---- Voice language switch (works while awake) ----
+                norm2 = normalize_text(text)
+
+                if norm2 in LANG_EN_WORDS or norm2 in LANG_EN_WORDS_RU:
+                    ok = set_language(conn, "en")
+                    speak(
+                        conn,
+                        "Okay. English mode." if ok else "I couldn't switch language.",
+                    )
+                    continue
+
+                if norm2 in LANG_RU_WORDS:
+                    ok = set_language(conn, "ru")
+                    speak(
+                        conn,
+                        (
+                            "Ок. Русский режим."
+                            if ok
+                            else "Не получилось переключить язык."
+                        ),
+                    )
                     continue
 
                 # Try safe command execution
