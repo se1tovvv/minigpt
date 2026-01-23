@@ -1,5 +1,5 @@
-# minigpt
-MiniGPT is a **real-time voice assistant** built using an ESP32, an I2S microphone and speaker,
+# MiniJarvis
+MiniJarvis is a **real-time voice assistant** built using an ESP32, an I2S microphone and speaker,
 and a Python server running OpenAI APIs.  
 It listens to the user, live-transcribes speech using Vosk, sends the text to GPT,
 and replies back **with both OLED text and spoken audio
